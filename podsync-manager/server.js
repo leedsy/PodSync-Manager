@@ -19,6 +19,7 @@ const DATA_DIR = process.env.PODSYNC_DATA_DIR || "/podsync/data";
 const MANAGER_DATA_DIR = process.env.MANAGER_DATA_DIR || "/manager-data";
 const MANAGER_ENV_PATH = process.env.MANAGER_ENV_PATH || "/manager-host/.env";
 const STATE_PATH = path.join(MANAGER_DATA_DIR, "state.json");
+const HOST_LAN_IP = String(process.env.HOST_LAN_IP || "").trim();
 
 await fsp.mkdir(MANAGER_DATA_DIR, { recursive: true });
 
@@ -193,14 +194,57 @@ async function removeFeedFiles(feedId) {
   await fsp.rm(path.join(DATA_DIR, `${feedId}.xml`), { force: true });
   await fsp.rm(path.join(DATA_DIR, feedId), { recursive: true, force: true });
 }
+function isLikelyContainerAddress(address) {
+  return /^172\.(1[6-9]|2\d|3[01])\./.test(String(address || ""));
+}
 function detectLanIps() {
   const result = [];
+  const seen = new Set();
+  if (HOST_LAN_IP && !seen.has(HOST_LAN_IP)) {
+    result.push({ name: "host", address: HOST_LAN_IP, preferred: true });
+    seen.add(HOST_LAN_IP);
+  }
   for (const [name, entries] of Object.entries(os.networkInterfaces())) {
     for (const x of entries || []) {
-      if (x.family === "IPv4" && !x.internal) result.push({ name, address: x.address });
+      if (x.family !== "IPv4" || x.internal || seen.has(x.address)) continue;
+      if (isLikelyContainerAddress(x.address)) continue;
+      result.push({ name, address: x.address, preferred: false });
+      seen.add(x.address);
     }
   }
   return result;
+}
+function hasConfiguredFeeds(cfg) {
+  return !!(cfg?.feeds && Object.keys(cfg.feeds).length);
+}
+async function containerState() {
+  try {
+    const { stdout } = await docker(["inspect", "-f", "{{.State.Running}}|{{.State.Status}}|{{.State.Restarting}}", PODSYNC_CONTAINER]);
+    const [running, status, restarting] = stdout.trim().split("|");
+    return { exists: true, running: running === "true", status: status || "unknown", restarting: restarting === "true" };
+  } catch {
+    return { exists: false, running: false, status: "not-created", restarting: false };
+  }
+}
+async function reconcilePodsync(cfg, { restartIfRunning = false } = {}) {
+  const hasFeeds = hasConfiguredFeeds(cfg);
+  const state = await containerState();
+  if (!hasFeeds) {
+    if (state.running || state.restarting) {
+      try { await docker(["stop", PODSYNC_CONTAINER], 60000); } catch {}
+    }
+    return { action: "waiting", state: await containerState() };
+  }
+  if (!state.exists) throw new Error("Podsync container has not been created. Run setup.sh or update.sh once.");
+  if (state.running && restartIfRunning) {
+    await docker(["restart", PODSYNC_CONTAINER], 60000);
+    return { action: "restarted", state: await containerState() };
+  }
+  if (!state.running) {
+    await docker(["start", PODSYNC_CONTAINER], 60000);
+    return { action: "started", state: await containerState() };
+  }
+  return { action: "unchanged", state };
 }
 function secretHint(value) {
   const s = String(value || "");
@@ -255,12 +299,14 @@ app.post("/api/logout", requireAuth, (req, res) => req.session.destroy(() => res
 app.get("/api/me", (req, res) => res.json({ authed: !!req.session?.authed }));
 
 app.get("/api/status", requireAuth, async (req, res) => {
-  let container = { running: false, status: "unknown" };
-  try {
-    const { stdout } = await docker(["inspect", "-f", "{{.State.Running}}|{{.State.Status}}", PODSYNC_CONTAINER]);
-    const [running, status] = stdout.trim().split("|");
-    container = { running: running === "true", status };
-  } catch {}
+  const { obj: cfg } = await readConfig();
+  const hasFeeds = hasConfiguredFeeds(cfg);
+  const stateInfo = await containerState();
+  const container = {
+    ...stateInfo,
+    waitingForFeed: !hasFeeds,
+    displayStatus: !hasFeeds ? "waiting for first feed" : (stateInfo.restarting ? "restarting" : stateInfo.status)
+  };
   let disk = null;
   try {
     const s = await fsp.statfs(DATA_DIR);
@@ -269,7 +315,7 @@ app.get("/api/status", requireAuth, async (req, res) => {
   const state = await readState();
   const rs = await runtimeSettings();
   res.json({
-    container, disk,
+    container, disk, hasFeeds,
     googleConnected: !!state.google?.refresh_token,
     deviceOAuthConfigured: !!(rs.googleClientId && rs.googleClientSecret),
     rssBaseUrl: rs.rssBaseUrl
@@ -283,12 +329,18 @@ app.get("/api/logs", requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post("/api/restart", requireAuth, async (req, res) => {
-  try { await docker(["restart", PODSYNC_CONTAINER], 60000); res.json({ ok: true }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+  try {
+    const { obj: cfg } = await readConfig();
+    if (!hasConfiguredFeeds(cfg)) return res.status(409).json({ error: "Podsync is waiting for the first feed. Add a subscription before starting it." });
+    const result = await reconcilePodsync(cfg, { restartIfRunning: true });
+    res.json({ ok: true, action: result.action });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post("/api/update-now", requireAuth, async (req, res) => {
   try {
-    await docker(["restart", PODSYNC_CONTAINER], 60000);
+    const { obj: cfg } = await readConfig();
+    if (!hasConfiguredFeeds(cfg)) return res.status(409).json({ error: "No feeds are configured yet." });
+    await reconcilePodsync(cfg, { restartIfRunning: true });
     res.json({ ok: true, message: "Podsync restarted; all configured feeds will be checked now." });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -320,6 +372,8 @@ app.get("/api/setup", requireAuth, async (req, res) => {
       serverPort: Number(rs.cfg?.server?.port || 8080),
       serverHostname: String(rs.cfg?.server?.hostname || ""),
       lanIps: detectLanIps(),
+      hostLanIp: HOST_LAN_IP,
+      hasFeeds: hasConfiguredFeeds(rs.cfg),
       defaults
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -372,48 +426,96 @@ app.post("/api/setup", requireAuth, async (req, res) => {
     };
     await writeState(state);
 
-    if (configChanged) await docker(["restart", PODSYNC_CONTAINER], 60000);
-    res.json({ ok: true, message: configChanged ? "Settings saved and Podsync restarted." : "Settings saved." });
+    let podsyncAction = "unchanged";
+    if (configChanged) {
+      const result = await reconcilePodsync(obj, { restartIfRunning: true });
+      podsyncAction = result.action;
+    }
+    const message = !hasConfiguredFeeds(obj)
+      ? "Settings saved. Podsync will start automatically after you add the first feed."
+      : (podsyncAction === "restarted" ? "Settings saved and Podsync restarted." : "Settings saved.");
+    res.json({ ok: true, message, podsyncAction });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/api/diagnostics", requireAuth, async (req, res) => {
   const checks = [];
-  let running = false;
+  let cfg = null;
   try {
-    const { stdout } = await docker(["inspect", "-f", "{{.State.Running}}", PODSYNC_CONTAINER]);
-    running = stdout.trim() === "true";
-    checks.push({ name: "Podsync container", ok: running, value: running ? "running" : "stopped" });
-  } catch { checks.push({ name: "Podsync container", ok: false, value: "not found" }); }
+    cfg = (await readConfig()).obj;
+    checks.push({ name: "config.toml", level: "ok", ok: true, value: "valid TOML" });
+  } catch (e) {
+    checks.push({ name: "config.toml", level: "error", ok: false, value: e.message });
+  }
 
-  try { await readConfig(); checks.push({ name: "config.toml", ok: true, value: "valid TOML" }); }
-  catch (e) { checks.push({ name: "config.toml", ok: false, value: e.message }); }
+  const hasFeeds = hasConfiguredFeeds(cfg);
+  const c = await containerState();
+  if (!hasFeeds) {
+    checks.unshift({ name: "Podsync container", level: "skip", ok: true, value: "waiting for first feed" });
+  } else if (c.restarting || c.status === "restarting") {
+    checks.unshift({ name: "Podsync container", level: "error", ok: false, value: "restarting" });
+  } else if (c.running) {
+    checks.unshift({ name: "Podsync container", level: "ok", ok: true, value: "running" });
+  } else {
+    checks.unshift({ name: "Podsync container", level: "error", ok: false, value: c.status || "stopped" });
+  }
 
   try {
     const rs = await runtimeSettings();
     const token = Array.isArray(rs.cfg?.tokens?.youtube) ? rs.cfg.tokens.youtube[0] : rs.cfg?.tokens?.youtube;
-    checks.push({ name: "YouTube API key", ok: !!token, value: token ? "configured" : "missing" });
-    checks.push({ name: "Google device OAuth", ok: !!(rs.googleClientId && rs.googleClientSecret), value: (rs.googleClientId && rs.googleClientSecret) ? "configured" : "missing" });
-    checks.push({ name: "RSS base URL", ok: !!rs.rssBaseUrl, value: rs.rssBaseUrl || "missing" });
+    checks.push({ name: "YouTube API key", level: token ? "ok" : "error", ok: !!token, value: token ? "configured" : "missing" });
+    checks.push({ name: "Google device OAuth", level: (rs.googleClientId && rs.googleClientSecret) ? "ok" : "error", ok: !!(rs.googleClientId && rs.googleClientSecret), value: (rs.googleClientId && rs.googleClientSecret) ? "configured" : "missing" });
+    checks.push({ name: "RSS base URL", level: rs.rssBaseUrl ? "ok" : "error", ok: !!rs.rssBaseUrl, value: rs.rssBaseUrl || "missing" });
   } catch {}
 
-  if (running) {
-    const probes = [
-      ["yt-dlp", ["exec", PODSYNC_CONTAINER, "yt-dlp", "--version"]],
-      ["FFmpeg", ["exec", PODSYNC_CONTAINER, "sh", "-c", "ffmpeg -version | head -n 1"]],
-      ["Node", ["exec", PODSYNC_CONTAINER, "sh", "-c", "node --version 2>/dev/null || true"]],
-      ["Deno", ["exec", PODSYNC_CONTAINER, "sh", "-c", "deno --version 2>/dev/null | head -n 1 || true"]],
-      ["iPod muxer", ["exec", PODSYNC_CONTAINER, "sh", "-c", "ffmpeg -hide_banner -muxers 2>/dev/null | grep -q ' ipod ' && echo available || echo missing"]]
-    ];
-    for (const [name, args] of probes) {
-      try {
-        const { stdout } = await docker(args);
-        const value = stdout.trim() || "not installed";
-        checks.push({ name, ok: name === "iPod muxer" ? value === "available" : !!stdout.trim(), value });
-      } catch (e) { checks.push({ name, ok: false, value: e.message }); }
+  if (!hasFeeds) {
+    for (const name of ["yt-dlp", "FFmpeg", "Node", "Deno", "iPod muxer"]) {
+      checks.push({ name, level: "skip", ok: true, value: "not checked until Podsync starts" });
+    }
+    return res.json({ checks, lanIps: detectLanIps(), hasFeeds });
+  }
+
+  if (!c.running || c.restarting) {
+    for (const name of ["yt-dlp", "FFmpeg", "Node", "Deno", "iPod muxer"]) {
+      checks.push({ name, level: "skip", ok: true, value: `not checked while Podsync is ${c.status || "stopped"}` });
+    }
+    return res.json({ checks, lanIps: detectLanIps(), hasFeeds });
+  }
+
+  // Podsync may keep yt-dlp under its historical youtube-dl name/path. Try
+  // common commands first, then fall back to the version Podsync logged.
+  try {
+    const { stdout } = await docker(["exec", PODSYNC_CONTAINER, "sh", "-c",
+      "if command -v yt-dlp >/dev/null 2>&1; then yt-dlp --version; elif command -v youtube-dl >/dev/null 2>&1; then youtube-dl --version; elif [ -x /app/youtube-dl ]; then /app/youtube-dl --version; elif [ -x /usr/local/bin/youtube-dl ]; then /usr/local/bin/youtube-dl --version; else exit 127; fi"]);
+    checks.push({ name: "yt-dlp", level: "ok", ok: true, value: stdout.trim() });
+  } catch {
+    try {
+      const { stdout, stderr } = await docker(["logs", "--tail", "150", PODSYNC_CONTAINER]);
+      const match = `${stdout}\n${stderr}`.match(/using youtube-dl\s+([^\s]+)/i);
+      if (!match) throw new Error("version not found");
+      checks.push({ name: "yt-dlp", level: "ok", ok: true, value: `${match[1]} (from Podsync startup log)` });
+    } catch (e) {
+      checks.push({ name: "yt-dlp", level: "error", ok: false, value: e.message });
     }
   }
-  res.json({ checks, lanIps: detectLanIps() });
+
+  const probes = [
+    ["FFmpeg", "ffmpeg -version | head -n 1", value => !!value],
+    ["Node", "node --version 2>/dev/null || true", value => !!value],
+    ["Deno", "deno --version 2>/dev/null | head -n 1 || true", value => !!value],
+    ["iPod muxer", "ffmpeg -hide_banner -muxers 2>/dev/null | grep -q ' ipod ' && echo available || echo missing", value => value === "available"]
+  ];
+  for (const [name, command, test] of probes) {
+    try {
+      const { stdout } = await docker(["exec", PODSYNC_CONTAINER, "sh", "-c", command]);
+      const value = stdout.trim() || "not installed";
+      const ok = test(value);
+      checks.push({ name, level: ok ? "ok" : "error", ok, value });
+    } catch (e) {
+      checks.push({ name, level: "error", ok: false, value: e.message });
+    }
+  }
+  res.json({ checks, lanIps: detectLanIps(), hasFeeds });
 });
 
 /* Google device authorization flow */
@@ -592,10 +694,10 @@ app.post("/api/apply", requireAuth, async (req, res) => {
     state.feedSettings = newFeedSettings;
     state.ui = { ...(state.ui || {}), defaults: { ...(state.ui?.defaults || {}), ...defaults } };
     await writeState(state);
-    await docker(["restart", PODSYNC_CONTAINER], 60000);
-    res.json({ ok: true, managedFeeds: newManaged, removedFeedIds: [...removedFeedIds], deletedData });
+    const podsync = await reconcilePodsync(obj, { restartIfRunning: true });
+    res.json({ ok: true, managedFeeds: newManaged, removedFeedIds: [...removedFeedIds], deletedData, podsyncAction: podsync.action });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.use(express.static("public"));
-app.listen(PORT, "0.0.0.0", ()=>console.log(`Podsync Manager v0.6.0 listening on :${PORT}`));
+app.listen(PORT, "0.0.0.0", ()=>console.log(`Podsync Manager v0.6.1 listening on :${PORT}`));

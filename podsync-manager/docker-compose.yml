@@ -14,6 +14,7 @@ services:
       MANAGER_DATA_DIR: /manager-data
       PODSYNC_CONTAINER: podsync
       MANAGER_CONTAINER: podsync-manager
+      HOST_LAN_IP: ${HOST_LAN_IP:-}
     volumes:
       - /opt/podsync:/podsync
       - /opt/podsync-manager:/manager-host

@@ -27,9 +27,8 @@ http://<server-ip>:3000
 Youtube API Required:
 https://console.cloud.google.com/
 - Enable Youtube API
--Create oAuth Client ID and Secret
-Application type:
-TVs and Limited Input devices (This bypasses the need for a URI Redirect)
+- Create oAuth Client ID and Secret
+- Application type: TVs and Limited Input devices (This bypasses the need for a URI Redirect)
 
 The installer prints the Manager URL and a generated admin password. Open the URL, sign in, then complete **Setup & Settings** in the browser.
 

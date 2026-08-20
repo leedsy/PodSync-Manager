@@ -1,0 +1,9 @@
+# Never commit live credentials or runtime data
+.env
+**/.env
+**/data/
+**/db/
+**/*.bak
+**/*.pre-v*.bak
+node_modules/
+.DS_Store

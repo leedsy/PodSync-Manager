@@ -1,0 +1,21 @@
+services:
+  podsync-manager:
+    build: .
+    container_name: podsync-manager
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      MANAGER_ENV_PATH: /manager-host/.env
+      PODSYNC_CONFIG_PATH: /podsync/config.toml
+      PODSYNC_DATA_DIR: /podsync/data
+      MANAGER_DATA_DIR: /manager-data
+      PODSYNC_CONTAINER: podsync
+      MANAGER_CONTAINER: podsync-manager
+    volumes:
+      - /opt/podsync:/podsync
+      - /opt/podsync-manager:/manager-host
+      - ./data:/manager-data
+      - /var/run/docker.sock:/var/run/docker.sock

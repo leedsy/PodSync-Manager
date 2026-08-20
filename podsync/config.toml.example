@@ -1,0 +1,20 @@
+# Podsync Manager creates and maintains this file.
+# Existing installations keep their current config.toml unchanged.
+
+[server]
+port = 8080
+
+[storage]
+type = "local"
+
+[storage.local]
+data_dir = "/app/data"
+
+[tokens]
+youtube = ""
+
+[downloader]
+self_update = true
+timeout = 15
+
+[feeds]

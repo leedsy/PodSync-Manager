@@ -1,0 +1,11 @@
+services:
+  podsync:
+    build: .
+    container_name: podsync
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.toml:/app/config.toml
+      - ./data:/app/data
+      - ./db:/app/db

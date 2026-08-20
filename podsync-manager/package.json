@@ -1,0 +1,14 @@
+{
+  "name": "podsync-manager",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2"
+  }
+}

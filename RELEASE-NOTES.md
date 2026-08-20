@@ -1,3 +1,17 @@
+# Podsync Manager v0.6.1
+
+## Updates
+- Bug-fix release focused on clean installs and diagnostics.
+- Podsync no longer crash-loops on a fresh install with zero feeds.
+- Manager reports `waiting for first feed`, `running`, `restarting`, and stopped states correctly.
+- Host LAN IP is detected by setup/update on the host rather than using the Manager container bridge address.
+- New subscription rows inherit the configured Scan/Keep defaults instead of briefly showing 0/0.
+- yt-dlp diagnostics support Podsync's historical `youtube-dl` executable naming/path and can fall back to the startup log version.
+- Runtime probes are shown as `not checked` while Podsync is intentionally waiting/stopped.
+- Adds `update.sh` for safe code-only upgrades while preserving `config.toml`, `.env`, media and database files.
+
+
+
 # v0.6.0 release notes
 
 ## Main change

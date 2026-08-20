@@ -16,7 +16,7 @@ On an Ubuntu/Debian-style Linux server:
 ```bash
 git clone https://github.com/leedsy/PodSync-Manager.git
 cd podsync-manager
-sudo ./setup.sh
+sudo bash setup.sh
 ```
 
 - Open your Browser:

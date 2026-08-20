@@ -1,4 +1,4 @@
-<img width="1444" height="666" alt="image" src="https://github.com/user-attachments/assets/813e029f-ae72-43dc-a3a8-b4a4ba9b6ceb" /># Podsync Manager Suite v0.6.0
+# Podsync Manager Suite v0.6.0
 
 A self-hosted web manager for turning selected YouTube subscriptions into private Podsync podcast feeds, including classic-iPod-compatible video post-processing.
 

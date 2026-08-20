@@ -19,8 +19,10 @@ cd podsync-manager
 sudo ./setup.sh
 ```
 
-- Open your Browser: 
+- Open your Browser:
+```bash
 http://<server-ip>:3000
+```
 
 Youtube API Required:
 https://console.cloud.google.com/

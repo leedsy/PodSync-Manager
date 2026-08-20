@@ -22,7 +22,7 @@ On an Ubuntu/Debian-style Linux server:
 ```bash
 git clone <your-repository-url>
 cd podsync-manager
-sudo ./setup.sh
+sudo bash setup.sh
 ```
 
 The installer prints the Manager URL and a generated admin password. Open the URL, sign in, then complete **Setup & Settings** in the browser.

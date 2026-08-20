@@ -2,6 +2,16 @@
 
 A self-hosted web manager for turning selected YouTube subscriptions into private Podsync podcast feeds, including classic-iPod-compatible video post-processing.
 
+## Features
+
+- Web Interface
+- Connect to your YouTube account
+- Select what channels you would like to convert into a podcast
+- Select how many episodes and the retention of the files
+- Select Audio or iPod Classic Video formats
+- Provide RSS URL for you to add into iTunes
+- Auto refresh YouTube for new episodes to automatically add
+
 ## v0.6.0 highlights
 
 - New **Setup & Settings** page in the web GUI.
@@ -32,3 +42,6 @@ https://console.cloud.google.com/
 
 The installer prints the Manager URL and a generated admin password. Open the URL, sign in, then complete **Setup & Settings** in the browser.
 
+## References
+
+This is a fork of the project: https://github.com/mxpv/podsync

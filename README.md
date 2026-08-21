@@ -1,4 +1,4 @@
-# Podsync Manager Suite v0.6.0
+# Podsync Manager Suite v0.7
 
 A self-hosted web manager for turning selected YouTube subscriptions into private Podsync podcast feeds, including classic-iPod-compatible video post-processing.
 
@@ -12,12 +12,6 @@ A self-hosted web manager for turning selected YouTube subscriptions into privat
 - Provide RSS URL for you to add into iTunes
 - Auto refresh YouTube for new episodes to automatically add
 
-## v0.6.0 highlights
-
-- New **Setup & Settings** page in the web GUI.
-- Reads/writes the existing `/opt/podsync/config.toml` and `/opt/podsync-manager/.env` files.
-- API keys/secrets are masked in the UI and blank secret fields mean “keep the existing value”.
-- Safe timestamped backups plus `.bak` copies before config changes.
 
 ## Fresh install
 

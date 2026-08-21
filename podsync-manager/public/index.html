@@ -189,7 +189,20 @@ function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&l
 function bytes(n){if(n==null)return'—';const u=['B','KB','MB','GB','TB'];let i=0,x=Number(n);while(x>=1024&&i<u.length-1){x/=1024;i++}return`${x.toFixed(i?1:0)} ${u[i]}`}
 function when(s){return s?new Date(s).toLocaleString():'—'}
 function slug(s){return String(s||'').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,50)||'feed'}
-async function copyText(t,msg){await navigator.clipboard.writeText(t);e.copyMessage.textContent=msg}
+function legacyCopyText(value){
+  const ta=document.createElement('textarea');
+  ta.value=value;ta.readOnly=true;ta.style.position='fixed';ta.style.opacity='0';ta.style.pointerEvents='none';
+  document.body.appendChild(ta);
+  try{ta.select();ta.setSelectionRange(0,value.length);return document.execCommand('copy')}
+  finally{ta.remove()}
+}
+async function copyText(text,msg){
+  const value=String(text??'');let copied=false;
+  if(window.isSecureContext&&navigator.clipboard?.writeText){try{await navigator.clipboard.writeText(value);copied=true}catch{}}
+  if(!copied){try{copied=legacyCopyText(value)}catch{}}
+  e.copyMessage.textContent=copied?msg:'Copy failed. Select the URL and copy it manually.';
+  return copied
+}
 function showPane(name){const setup=name==='setup';e.dashboardPane.classList.toggle('hidden',setup);e.setupPane.classList.toggle('hidden',!setup);e.dashboardTab.classList.toggle('active',!setup);e.setupTab.classList.toggle('active',setup);e.dashboardTab.setAttribute('aria-selected',String(!setup));e.setupTab.setAttribute('aria-selected',String(setup));if(setup)loadSetup()}
 async function init(){const m=await api('/api/me');if(!m.authed){e.loginView.classList.remove('hidden');return}e.mainView.classList.remove('hidden');await loadSetup(true);await status();await loadFeeds();if(setupData&&!setupData.complete){e.setupRequired.classList.remove('hidden');showPane('setup')}}
 async function login(){try{await api('/api/login',{method:'POST',body:JSON.stringify({password:e.password.value})});location.reload()}catch(x){e.loginError.textContent=x.message}}

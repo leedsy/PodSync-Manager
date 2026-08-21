@@ -440,6 +440,7 @@ app.post("/api/setup", requireAuth, async (req, res) => {
       ? "Settings saved. Podsync will start automatically after you add the first feed."
       : (podsyncAction === "restarted" ? "Settings saved and Podsync restarted." : "Settings saved.");
     res.json({ ok: true, message, podsyncAction });
+<<<<<<< HEAD
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -461,6 +462,8 @@ app.post("/api/account/password", requireAuth, async (req, res) => {
     req.session.destroy(() => {
       res.json({ ok: true, message: "Password changed. Sign in again with your new password." });
     });
+=======
+>>>>>>> b17eaf044d337dd5855b1b278e4081aac87457e3
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

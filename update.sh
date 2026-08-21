@@ -1,15 +1,20 @@
 #!/bin/sh
 set -eu
 
-<<<<<<< HEAD
 VERSION="0.6.2"
-=======
-VERSION="0.6.1"
->>>>>>> b17eaf044d337dd5855b1b278e4081aac87457e3
 
+# This script never asks for the PodSync Manager web password.
+# It does require Linux administrator privileges because it updates files in
+# /opt and rebuilds Docker containers. When run as a normal user, it elevates
+# itself with sudo and clearly explains which password sudo may request.
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Please run: sudo ./update.sh"
-  exit 1
+  echo "PodSync Manager updater v$VERSION"
+  echo
+  echo "This update needs Linux administrator privileges to update /opt and Docker."
+  echo "If sudo asks for a password, enter your Linux/Ubuntu account password."
+  echo "This updater will NEVER ask for your PodSync Manager web login password."
+  echo
+  exec sudo sh "$0" "$@"
 fi
 
 SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -19,7 +24,7 @@ MANAGER_DIR="/opt/podsync-manager"
 for required in "$PODSYNC_DIR/config.toml" "$MANAGER_DIR/.env"; do
   if [ ! -f "$required" ]; then
     echo "Existing installation not found ($required is missing)."
-    echo "Run sudo ./setup.sh instead."
+    echo "Run ./setup.sh instead."
     exit 1
   fi
 done
@@ -31,8 +36,8 @@ cp "$MANAGER_DIR/.env" "$MANAGER_DIR/.env.pre-update-$stamp.bak"
 echo "Updating application files only."
 echo "Preserving config.toml, .env, data and db."
 
-# Refresh code/container definitions. Never copy config.toml.example over the
-# live config and never touch Podsync media/database directories.
+# Refresh code/container definitions only. Never overwrite the live config,
+# Manager .env, Podsync media, or Podsync database.
 cp "$SOURCE_DIR/podsync/Dockerfile" "$PODSYNC_DIR/Dockerfile"
 cp "$SOURCE_DIR/podsync/docker-compose.yml" "$PODSYNC_DIR/docker-compose.yml"
 cp "$SOURCE_DIR/podsync/postprocess-ipod-video.sh" "$PODSYNC_DIR/postprocess-ipod-video.sh"
@@ -47,13 +52,17 @@ cp "$SOURCE_DIR/podsync-manager/public/index.html" "$MANAGER_DIR/public/index.ht
 cp "$SOURCE_DIR/podsync-manager/.env.example" "$MANAGER_DIR/.env.example"
 
 set_env_value() {
-  file="$1" key="$2" value="$3"
+  file="$1"
+  key="$2"
+  value="$3"
   if grep -q "^${key}=" "$file" 2>/dev/null; then
     sed -i "s|^${key}=.*|${key}=${value}|" "$file"
   else
     printf '%s=%s\n' "$key" "$value" >> "$file"
   fi
 }
+
+# Detect host LAN IP outside Docker. Prefer normal private LAN ranges.
 lan_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | awk '/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ {print; exit}')"
 [ -n "$lan_ip" ] || lan_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$lan_ip" ] && set_env_value "$MANAGER_DIR/.env" HOST_LAN_IP "$lan_ip"
@@ -78,6 +87,6 @@ docker compose build --pull
 docker compose up -d
 
 echo
-echo "Podsync Manager updated to v$VERSION."
+echo "PodSync Manager updated to v$VERSION."
 echo "User configuration and media were preserved."
 [ -n "$lan_ip" ] && echo "Open: http://$lan_ip:3000"

@@ -34,6 +34,16 @@ sudo bash setup.sh
 http://<server-ip>:3000
 ```
 
+## Update your current version
+
+```bash
+cd podsync-manager
+git pull
+sudo bash update.sh
+```
+
+
+
 Youtube API Required:
 https://console.cloud.google.com/
 - Enable Youtube API

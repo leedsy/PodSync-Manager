@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const app = express();
 let authGeneration = crypto.randomBytes(16).toString("hex");
+const episodeRepairJobs = new Map();
 
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
@@ -138,6 +139,149 @@ function requireAuth(req, res, next) {
 }
 async function fileExists(p) {
   try { await fsp.access(p); return true; } catch { return false; }
+}
+
+function decodeXmlEntities(value) {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .trim();
+}
+function xmlTag(block, name) {
+  const m = String(block || "").match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i"));
+  return m ? decodeXmlEntities(m[1]) : "";
+}
+function parseRssEpisodes(xml, feedId) {
+  const result = [];
+  const items = String(xml || "").match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  for (const block of items) {
+    const enclosure = block.match(/<enclosure\b([^>]*)\/?\s*>/i);
+    const attrs = enclosure?.[1] || "";
+    const urlMatch = attrs.match(/\burl=(?:"([^"]*)"|'([^']*)')/i);
+    const typeMatch = attrs.match(/\btype=(?:"([^"]*)"|'([^']*)')/i);
+    const enclosureUrl = decodeXmlEntities(urlMatch?.[1] || urlMatch?.[2] || "");
+    let filename = "";
+    try {
+      const u = new URL(enclosureUrl, "http://podsync.local");
+      filename = decodeURIComponent(path.basename(u.pathname));
+    } catch {}
+    if (!filename) continue;
+    const id = xmlTag(block, "guid") || filename.replace(/\.[^.]+$/, "").split("_").pop();
+    const link = xmlTag(block, "link");
+    if (!id || !/^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(link)) continue;
+    result.push({
+      id,
+      title: xmlTag(block, "title") || id,
+      link,
+      pubDate: xmlTag(block, "pubDate") || null,
+      duration: xmlTag(block, "itunes:duration") || null,
+      enclosureUrl,
+      filename,
+      expectedPath: path.join(DATA_DIR, feedId, filename),
+      mimeType: decodeXmlEntities(typeMatch?.[1] || typeMatch?.[2] || "")
+    });
+  }
+  return result;
+}
+function shellQuote(value) {
+  return `'${String(value ?? "").replace(/'/g, `'"'"'`)}'`;
+}
+async function recentPodsyncLogs(tail = 800) {
+  try {
+    const { stdout, stderr } = await docker(["logs", "--tail", String(tail), PODSYNC_CONTAINER]);
+    return [stdout, stderr].filter(Boolean).join("\n");
+  } catch { return ""; }
+}
+async function episodeLooksActive(episodeId, expectedPath, logs = "") {
+  const key = String(episodeId || "");
+  const job = episodeRepairJobs.get(key);
+  if (job?.status === "processing") return true;
+
+  // A running yt-dlp/ffmpeg command containing the episode ID is the strongest
+  // signal that the episode is currently being downloaded or converted.
+  try {
+    const { stdout } = await docker(["top", PODSYNC_CONTAINER, "-eo", "args"]);
+    if (stdout.includes(key)) return true;
+  } catch {}
+
+  // The iPod postprocessor writes a temporary file beside the final MP4.
+  const dir = path.dirname(expectedPath);
+  const base = path.basename(expectedPath, path.extname(expectedPath));
+  if (await fileExists(path.join(dir, `${base}.ipod-tmp.m4v`))) return true;
+
+  const relevant = String(logs || "").split(/\r?\n/).filter(line => line.includes(key));
+  if (!relevant.length) return false;
+  const last = relevant[relevant.length - 1];
+  if (/successfully downloaded file|post episode download hook .*executed successfully|youtube-dl error|failed to execute post episode download hook/i.test(last)) return false;
+  return /! downloading episode|creating file:/i.test(last);
+}
+async function readFeedEpisodes(feedId, cfg) {
+  if (!validManagedFeedId(feedId)) throw new Error("Invalid feed id");
+  const xmlPath = path.join(DATA_DIR, `${feedId}.xml`);
+  if (!(await fileExists(xmlPath))) return [];
+  const xml = await fsp.readFile(xmlPath, "utf8");
+  const episodes = parseRssEpisodes(xml, feedId);
+  const logs = await recentPodsyncLogs();
+  for (const ep of episodes) {
+    try {
+      const st = await fsp.stat(ep.expectedPath);
+      ep.status = "available";
+      ep.fileSize = st.size;
+      ep.modifiedAt = st.mtime.toISOString();
+    } catch {
+      ep.status = await episodeLooksActive(ep.id, ep.expectedPath, logs) ? "processing" : "missing";
+      ep.fileSize = null;
+      ep.modifiedAt = null;
+    }
+    const job = episodeRepairJobs.get(ep.id);
+    if (ep.status === "missing" && job?.status === "failed") ep.lastError = job.error || "Redownload failed";
+    delete ep.expectedPath;
+  }
+  return episodes;
+}
+async function runEpisodeRepair(feedId, cfg, episode) {
+  const jobKey = episode.id;
+  const mediaType = cfg?.format === "video" ? "video" : "audio";
+  const preset = mediaType === "video" ? videoPresetFromConfig(cfg) : null;
+  const hostTarget = path.join(DATA_DIR, feedId, episode.filename);
+  const containerDir = `/app/data/${feedId}`;
+  const ext = path.extname(episode.filename).toLowerCase();
+  const expectedBase = path.basename(episode.filename, ext);
+  const tempBase = `${containerDir}/.${episode.id}.redownload`;
+  const containerTarget = `${containerDir}/${episode.filename}`;
+
+  episodeRepairJobs.set(jobKey, { status: "processing", feedId, startedAt: new Date().toISOString() });
+  try {
+    await fsp.mkdir(path.dirname(hostTarget), { recursive: true });
+    const ytdlp = `YTDLP=\"$(command -v yt-dlp 2>/dev/null || command -v youtube-dl 2>/dev/null || true)\"; ` +
+      `if [ -z \"$YTDLP\" ] && [ -x /app/youtube-dl ]; then YTDLP=/app/youtube-dl; fi; ` +
+      `if [ -z \"$YTDLP\" ] && [ -x /usr/local/bin/youtube-dl ]; then YTDLP=/usr/local/bin/youtube-dl; fi; ` +
+      `if [ -z \"$YTDLP\" ]; then echo 'yt-dlp/youtube-dl was not found' >&2; exit 127; fi; `;
+    const common = `\"$YTDLP\" --no-progress --no-playlist --js-runtimes node --remote-components ejs:github --extractor-args youtube:player_client=web_embedded`;
+    let command;
+    if (mediaType === "video") {
+      command = `${ytdlp} mkdir -p ${shellQuote(containerDir)}; rm -f ${shellQuote(tempBase)}.*; ` +
+        `${common} -f 'bv*+ba/b' --merge-output-format mp4 -o ${shellQuote(tempBase + '.%(ext)s')} ${shellQuote(episode.link)}; ` +
+        `INPUT=\"$(find ${shellQuote(containerDir)} -maxdepth 1 -type f -name ${shellQuote('.' + episode.id + '.redownload.*')} ! -name '*.part' | head -n 1)\"; ` +
+        `if [ -z \"$INPUT\" ]; then echo 'Downloaded video file was not found' >&2; exit 1; fi; ` +
+        `EPISODE_FILE=\"$INPUT\" /usr/local/bin/postprocess-ipod-video.sh ${shellQuote(preset)}; ` +
+        `test -f ${shellQuote(tempBase + '.mp4')}; mv -f ${shellQuote(tempBase + '.mp4')} ${shellQuote(containerTarget)}; rm -f ${shellQuote(tempBase)}.*`;
+    } else {
+      command = `${ytdlp} mkdir -p ${shellQuote(containerDir)}; rm -f ${shellQuote(tempBase)}.*; ` +
+        `${common} -x --audio-format mp3 --audio-quality 0 --embed-thumbnail --convert-thumbnails jpg --add-metadata -o ${shellQuote(tempBase + '.%(ext)s')} ${shellQuote(episode.link)}; ` +
+        `test -f ${shellQuote(tempBase + '.mp3')}; mv -f ${shellQuote(tempBase + '.mp3')} ${shellQuote(containerTarget)}; rm -f ${shellQuote(tempBase)}.*`;
+    }
+    await docker(["exec", PODSYNC_CONTAINER, "sh", "-lc", command], 60 * 60 * 1000);
+    episodeRepairJobs.set(jobKey, { status: "completed", feedId, completedAt: new Date().toISOString() });
+  } catch (e) {
+    const detail = String(e?.stderr || e?.stdout || e?.message || e).trim().slice(-2000);
+    episodeRepairJobs.set(jobKey, { status: "failed", feedId, error: detail || "Redownload failed", failedAt: new Date().toISOString() });
+  }
 }
 
 async function mediaDirStats(dir) {
@@ -662,6 +806,43 @@ app.get("/api/feeds", requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+app.get("/api/feeds/:feedId/episodes", requireAuth, async (req, res) => {
+  try {
+    const feedId = String(req.params.feedId || "");
+    if (!validManagedFeedId(feedId)) return res.status(400).json({ error: "Invalid feed id" });
+    const { obj } = await readConfig();
+    const cfg = obj.feeds?.[feedId];
+    if (!cfg) return res.status(404).json({ error: "Feed not found" });
+    const episodes = await readFeedEpisodes(feedId, cfg);
+    res.json({ feedId, title: cfg?.custom?.title || cfg?.custom?.author || feedId, mediaType: cfg?.format === "video" ? "video" : "audio", episodes });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/feeds/:feedId/episodes/:episodeId/redownload", requireAuth, async (req, res) => {
+  try {
+    const feedId = String(req.params.feedId || "");
+    const episodeId = String(req.params.episodeId || "");
+    if (!validManagedFeedId(feedId) || !/^[A-Za-z0-9_-]{6,32}$/.test(episodeId)) return res.status(400).json({ error: "Invalid feed or episode id" });
+    const { obj } = await readConfig();
+    const cfg = obj.feeds?.[feedId];
+    if (!cfg) return res.status(404).json({ error: "Feed not found" });
+    const c = await containerState();
+    if (!c.running || c.restarting) return res.status(409).json({ error: "Podsync must be running before an episode can be redownloaded." });
+
+    const episodes = await readFeedEpisodes(feedId, cfg);
+    const episode = episodes.find(x => x.id === episodeId);
+    if (!episode) return res.status(404).json({ error: "Episode is no longer present in this RSS feed." });
+    if (episode.status === "available") return res.status(409).json({ error: "The episode file is already available." });
+    if (episode.status === "processing") return res.status(409).json({ error: "This episode is already downloading or processing." });
+
+    // Do not await this job. The modal polls the status endpoint while yt-dlp
+    // and the iPod conversion pipeline run in the Podsync container.
+    void runEpisodeRepair(feedId, cfg, episode);
+    res.status(202).json({ ok: true, status: "processing", message: "Redownload started." });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post("/api/apply", requireAuth, async (req, res) => {
   try {
     const selections = Array.isArray(req.body?.feeds) ? req.body.feeds : [];
@@ -726,4 +907,4 @@ app.post("/api/apply", requireAuth, async (req, res) => {
 });
 
 app.use(express.static("public"));
-app.listen(PORT, "0.0.0.0", ()=>console.log(`Podsync Manager v0.6.1 listening on :${PORT}`));
+app.listen(PORT, "0.0.0.0", ()=>console.log(`Podsync Manager v0.7.0 listening on :${PORT}`));

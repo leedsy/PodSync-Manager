@@ -1,3 +1,19 @@
+# PodSync Manager v0.7.0
+
+## Updates
+- Episode file status and repair
+- Adds an Episodes button to every configured feed.
+- Lists episodes currently present in that feed's generated RSS.
+- Shows each episode as Available, Processing, or File missing.
+- Shows the actual local media file size when available.
+- Shows Redownload only when the final media file is genuinely missing.
+- Does not show Redownload while Podsync/yt-dlp/FFmpeg is actively processing that episode.
+- The backend re-checks status when Redownload is clicked to prevent duplicate jobs.
+- Redownload repairs the missing file without modifying Podsync's download-history database.
+- Video repairs run through the existing classic-iPod conversion script and selected feed preset.
+- Audio repairs restore an MP3 with metadata and embedded artwork.
+
+
 # Podsync Manager v0.6.1
 
 ## Updates

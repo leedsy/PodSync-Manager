@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-VERSION="0.6.2"
+VERSION="0.7.0"
 
 # This script never asks for the PodSync Manager web password.
 # It does require Linux administrator privileges because it updates files in

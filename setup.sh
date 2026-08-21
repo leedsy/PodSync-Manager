@@ -1,11 +1,7 @@
 #!/bin/sh
 set -eu
 
-<<<<<<< HEAD
-VERSION="0.6.2"
-=======
-VERSION="0.6.1"
->>>>>>> b17eaf044d337dd5855b1b278e4081aac87457e3
+VERSION="0.7.0"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Please run: sudo ./setup.sh"
